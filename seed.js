@@ -12,8 +12,9 @@ const User = require('./models/User');
 dotenv.config();
 
 const SEED_USERS = [
-  { username: 'demo', email: 'demo@whiteboard.app', password: 'password123' },
-  { username: 'guest', email: 'guest@whiteboard.app', password: 'password123' },
+  { username: 'Fayaz', email: 'fayaz.khanxid@melf.com', password: 'King4khan' },
+  { username: 'Sneha', email: 'Sneha@melf.com', password: 'Sneha@melf' },
+  { username: 'Rachelle', email: 'Rachelle@melf.com', password: 'Rachelle@melf' }
 ];
 
 async function seed() {

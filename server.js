@@ -11,25 +11,31 @@ dotenv.config();
 connectDB();
 
 const app = express();
-app.use(cors());
+
+const CLIENT_URL = process.env.CLIENT_URL || '*';
+
+app.use(cors({ origin: CLIENT_URL }));
 app.use(express.json({ limit: '25mb' }));
 
 const server = http.createServer(app);
 const io = socketIo(server, {
-  cors: { origin: '*' },
-  maxHttpBufferSize: 2.5e7, // 25MB to allow image elements in scene payloads
+  cors: { 
+    origin: CLIENT_URL,
+    methods: ['GET', 'POST']
+  },
+  maxHttpBufferSize: 2.5e7, // 25MB for image payloads
 });
+
+// Health check endpoint for host monitoring
+app.get('/health', (req, res) => res.status(200).send('OK'));
+app.get('/', (req, res) => res.json({ status: 'ok', service: 'whiteboard-api' }));
 
 // REST routes
 app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/rooms', require('./routes/roomRoutes'));
 
-app.get('/', (req, res) => res.json({ status: 'ok', service: 'whiteboard-api' }));
-
 /**
  * In-memory live sessions keyed by roomId.
- * Each session holds the latest scene (elements + appState), the set of
- * connected collaborators, the owner id (for persistence) and a debounce timer.
  */
 const sessions = Object.create(null);
 
@@ -70,8 +76,6 @@ function schedulePersist(roomId) {
   session.saveTimer = setTimeout(() => persistScene(roomId), 1500);
 }
 
-// Broadcast the end of a session and detach every socket from the room.
-// `exceptId` (the host who ended it) keeps their board and is not notified.
 function endSession(roomId, reason, exceptId) {
   const session = sessions[roomId];
   if (!session) return;
@@ -92,7 +96,6 @@ function endSession(roomId, reason, exceptId) {
   });
 }
 
-// Fully add a socket to a room (host immediately, guests after approval).
 function admitSocket(socket, roomId, user, role) {
   const session = sessions[roomId];
   if (!session) return;
@@ -115,7 +118,6 @@ function admitSocket(socket, roomId, user, role) {
 }
 
 function leaveRoom(socket) {
-  // Clear any pending (awaiting-approval) state first.
   const pendingRoom = socket.data.pendingRoom;
   if (pendingRoom && sessions[pendingRoom] && sessions[pendingRoom].pending) {
     delete sessions[pendingRoom].pending[socket.id];
@@ -126,7 +128,6 @@ function leaveRoom(socket) {
   if (!roomId) return;
   const session = sessions[roomId];
   if (session) {
-    // The host leaving ends the session for everyone.
     if (session.hostSocketId === socket.id) {
       delete session.collaborators[socket.id];
       endSession(roomId, 'The host left the session');
@@ -191,14 +192,12 @@ io.on('connection', (socket) => {
     if (isHost) {
       session.hostSocketId = socket.id;
       admitSocket(socket, roomId, user, 'host');
-      // Forward any requests that queued up while the host was away.
       for (const [sid, pendingUser] of Object.entries(session.pending)) {
         socket.emit('join-request', { socketId: sid, user: pendingUser });
       }
       return;
     }
 
-    // Guests need the host to approve them before joining.
     if (!session.hostSocketId || !io.sockets.sockets.get(session.hostSocketId)) {
       socket.emit('join-rejected', { reason: 'The host is not available right now' });
       return;
@@ -332,5 +331,24 @@ io.on('connection', (socket) => {
   });
 });
 
+// Environment-aware port listening
 const PORT = process.env.PORT || 3001;
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server listening on port ${PORT}`);
+});
+
+// Graceful shutdown handling for containerized deploys (Render/Railway/Docker)
+const gracefulShutdown = async () => {
+  console.log('Shutting down server, persisting active sessions...');
+  const promises = Object.keys(sessions).map((roomId) => persistScene(roomId));
+  await Promise.all(promises);
+  server.close(() => {
+    console.log('HTTP/Socket server closed.');
+    process.exit(0);
+  });
+};
+
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
+
+module.exports = app;
